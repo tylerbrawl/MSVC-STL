@@ -685,6 +685,185 @@ public:
         }
     }
 
+    template <class _Gty = _Err>
+    _NODISCARD constexpr _Err error_or(_Gty&& _Other) const& noexcept(
+        is_nothrow_copy_constructible_v<_Err>&& is_nothrow_convertible_v<_Gty, _Err>) { // strengthened
+        static_assert(
+            is_copy_constructible_v<_Err>, "is_copy_constructible_v<E> must be true. (N4928 [expected.object.obs]/20)");
+        static_assert(
+            is_convertible_v<_Gty, _Err>, "is_convertible_v<G, E> must be true. (N4928 [expected.object.obs]/20)");
+
+        if (_Has_value) {
+            return static_cast<_Err>(_STD forward<_Gty>(_Other));
+        } else {
+            return _Unexpected;
+        }
+    }
+
+    template <class _Gty = _Err>
+    _NODISCARD constexpr _Err error_or(_Gty&& _Other) && noexcept(
+        is_nothrow_move_constructible_v<_Err>&& is_nothrow_convertible_v<_Gty, _Err>) { // strengthened
+        static_assert(
+            is_move_constructible_v<_Err>, "is_move_constructible_v<E> must be true. (N4928 [expected.object.obs]/22)");
+        static_assert(
+            is_convertible_v<_Gty, _Err>, "is_convertible_v<G, E> must be true. (N4928 [expected.object.obs]/22)");
+
+        if (_Has_value) {
+            return static_cast<_Err>(_STD forward<_Gty>(_Other));
+        } else {
+            return _STD move(_Unexpected);
+        }
+    }
+
+    // [expected.object.monadic]
+
+    template <class _Fty>
+        requires is_copy_constructible_v<_Err>
+    constexpr auto and_then(_Fty&& _Func) & noexcept(noexcept(_STD invoke(_STD forward<_Fty>(_Func), _Value))
+                                                     && is_nothrow_copy_constructible_v<_Err>) { // strengthened
+        using _Invoke_t = remove_cvref_t<invoke_result_t<_Fty, _Ty&>>;
+        static_assert(_Is_specialization_v<_Invoke_t, expected>,
+            "remove_cvref_t<invoke_result_t<F, decltype(value())>> must be a specialization of expected. (N4928 "
+            "[expected.object.monadic]/3)");
+        static_assert(is_same_v<_Invoke_t::error_type, _Err>,
+            "is_same_v<U::error_type, E> (where U = remove_cvref_t<invoke_result_t<F, decltype(value())>>) must be "
+            "true. (N4928 [expected.object.monadic]/3)");
+
+        if (_Has_value) {
+            return _STD invoke(_STD forward<_Fty>(_Func), _Value);
+        } else {
+            return _Invoke_t(unexpect, _Unexpected);
+        }
+    }
+
+    template <class _Fty>
+        requires is_move_constructible_v<_Err>
+    constexpr auto and_then(_Fty&& _Func) && noexcept(
+        noexcept(_STD invoke(_STD forward<_Fty>(_Func), _STD move(_Value)))
+        && is_nothrow_move_constructible_v<_Err>) { // strengthened
+        using _Invoke_t = remove_cvref_t<invoke_result_t<_Fty, _Ty&&>>;
+        static_assert(_Is_specialization_v<_Invoke_t, expected>,
+            "remove_cvref_t<invoke_result_t<F, decltype(std::move(value()))>> must be a specialization of expected. "
+            "(N4928 [expected.object.monadic]/7)");
+        static_assert(is_same_v<_Invoke_t::error_type, _Err>,
+            "is_same_v<U::error_type, E> (where U = remove_cvref_t<invoke_result_t<F, decltype(std::move(value()))>>) "
+            "must be true. (N4928 [expected.object.monadic]/7)");
+
+        if (_Has_value) {
+            return _STD invoke(_STD forward<_Fty>(_Func), _STD move(_Value));
+        } else {
+            return _Invoke_t(unexpect, _STD move(_Unexpected));
+        }
+    }
+
+    template <class _Fty>
+        requires is_copy_constructible_v<_Err>
+    constexpr auto and_then(_Fty&& _Func) const& noexcept(noexcept(_STD invoke(_STD forward<_Fty>(_Func), _Value))
+                                                          && is_nothrow_copy_constructible_v<_Err>) { // strengthened
+        using _Invoke_t = remove_cvref_t<invoke_result_t<_Fty, const _Ty&>>;
+        static_assert(_Is_specialization_v<_Invoke_t, expected>,
+            "remove_cvref_t<invoke_result_t<F, decltype(value())>> must be a specialization of expected. (N4928 "
+            "[expected.object.monadic]/3)");
+        static_assert(is_same_v<_Invoke_t::error_type, _Err>,
+            "is_same_v<U::error_type, E> (where U = remove_cvref_t<invoke_result_t<F, decltype(value())>>) must be "
+            "true. (N4928 [expected.object.monadic]/3)");
+
+        if (_Has_value) {
+            return _STD invoke(_STD forward<_Fty>(_Func), _Value);
+        } else {
+            return _Invoke_t(unexpect, _Unexpected);
+        }
+    }
+
+    template <class _Fty>
+
+    /*
+    TODO: This looks to be seriously wrong. I mean, a move constructor for a type T
+    taking a T&& is never called with a const T&&; either a constructor which explicitly
+    takes a const T&& is called or the copy constructor is called.
+
+    std::is_move_constructible_v<T> for a referenceable type is equivalent to
+    std::is_constructible_v<T, std::add_rvalue_reference_t<T>>. But consider the following
+    valid C++ type:
+
+    class DummyType
+    {
+    public:
+        DummyType() = default;
+
+        DummyType(const DummyType&) = delete;
+        DummyType(DummyType&&) = delete;
+
+        DummyType(const DummyType&&)
+        {
+            // Do some stuff...
+        }
+    };
+
+    This type isn't "move constructible" as per std::is_move_constructible_v<DummyType> (since
+    DummyType(DummyType&&) is explicitly deleted), but a separate move constructor taking a
+    const DummyType&& is defined. Shouldn't the constraint for std::expected<T, E>::and_then() const&&
+    be std::is_move_constructible_v<const E>, then?
+
+    If my suspicions are correct, then this should be an LWG issue. More research is needed,
+    however.
+    */
+        requires is_move_constructible_v<_Err>
+
+    constexpr auto and_then(_Fty&& _Func) const&& noexcept(
+        noexcept(_STD invoke(_STD forward<_Fty>(_Func), _STD move(_Value)))
+        && is_nothrow_constructible_v<_Err, const _Err&&>) { // strengthened
+        using _Invoke_t = remove_cvref_t<invoke_result_t<_Fty, const _Ty&&>>;
+        static_assert(_Is_specialization_v<_Invoke_t, expected>,
+            "remove_cvref_t<invoke_result_t<F, decltype(std::move(value()))>> must be a specialization of expected. "
+            "(N4928 [expected.object.monadic]/7)");
+        static_assert(is_same_v<_Invoke_t::error_type, _Err>,
+            "is_same_v<U::error_type, E> (where U = remove_cvref_t<invoke_result_t<F, decltype(std::move(value()))>>) "
+            "must be true. (N4928 [expected.object.monadic]/7)");
+
+        if (_Has_value) {
+            return _STD invoke(_STD forward<_Fty>(_Func), _STD move(_Value));
+        } else {
+            return _Invoke_t(unexpect, _STD move(_Unexpected));
+        }
+    }
+
+    template <class _Fty>
+    constexpr auto or_else(_Fty&& _Func) &;
+
+    template <class _Fty>
+    constexpr auto or_else(_Fty&& _Func) &&;
+
+    template <class _Fty>
+    constexpr auto or_else(_Fty&& _Func) const&;
+
+    template <class _Fty>
+    constexpr auto or_else(_Fty&& _Func) const&&;
+
+    template <class _Fty>
+    constexpr auto transform(_Fty&& _Func) &;
+
+    template <class _Fty>
+    constexpr auto transform(_Fty&& _Func) &&;
+
+    template <class _Fty>
+    constexpr auto transform(_Fty&& _Func) const&;
+
+    template <class _Fty>
+    constexpr auto transform(_Fty&& _Func) const&&;
+
+    template <class _Fty>
+    constexpr auto transform_error(_Fty&& _Func) &;
+
+    template <class _Fty>
+    constexpr auto transform_error(_Fty&& _Func) &&;
+
+    template <class _Fty>
+    constexpr auto transform_error(_Fty&& _Func) const&;
+
+    template <class _Fty>
+    constexpr auto transform_error(_Fty&& _Func) const&&;
+
     // [expected.object.eq]
 
     template <class _Uty, class _UErr>
