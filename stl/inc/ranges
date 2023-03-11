@@ -9169,6 +9169,162 @@ namespace ranges {
         _EXPORT_STD inline constexpr _Adjacent_fn<2> pairwise;
     } // namespace views
 
+    template <bool _IsConst, class _First, class... _OtherViews>
+    concept _Cartesian_product_is_random_access = (random_access_range<_Maybe_const<_IsConst, _First>> && ...
+                                                   && (random_access_range<_Maybe_const<_IsConst, _OtherViews>>
+                                                       && sized_range<_Maybe_const<_IsConst, _OtherViews>>) );
+
+    template <class _Range>
+    concept _Cartesian_product_common_arg = common_range<_Range>
+                                         || (sized_range<_Range> && random_access_range<_Range>);
+
+    template <bool _IsConst, class _First, class... _OtherViews>
+    concept _Cartesian_product_is_bidirectional =
+        (bidirectional_range<_Maybe_const<_IsConst, _First>> && ...
+            && (bidirectional_range<_Maybe_const<_IsConst, _OtherViews>>
+                && _Cartesian_product_common_arg<_Maybe_const<_IsConst, _OtherViews>>) );
+
+    template <class _First, class... _OtherViews>
+    concept _Cartesian_product_is_common = _Cartesian_product_common_arg<_First>;
+
+    template <class... _Views>
+    concept _Cartesian_product_is_sized = (sized_range<_Views> && ...);
+
+    template <bool _IsConst, template <class> class _FirstSent, class _First, class... _OtherViews>
+    concept _Cartesian_is_sized_sentinel =
+        (sized_sentinel_for<_FirstSent<_Maybe_const<_IsConst, _First>>, iterator_t<_Maybe_const<_IsConst, _First>>>
+            && ...
+            && (sized_range<_Maybe_const<_IsConst, _OtherViews>>
+                && sized_sentinel_for<iterator_t<_Maybe_const<_IsConst, _OtherViews>>,
+                    iterator_t<_Maybe_const<_IsConst, _OtherViews>>>) );
+
+    template <_Cartesian_product_common_arg _Rng>
+    constexpr auto _Cartesian_common_arg_end(_Rng& _Range) {
+        if constexpr (common_range<_Rng>) {
+            return _RANGES end(_Range);
+        } else {
+            return _RANGES begin(_Range) + _RANGES distance(_Range);
+        }
+    }
+
+    _EXPORT_STD template <input_range _First, forward_range... _OtherViews>
+        requires (view<_First> && ... && view<_OtherViews>)
+    class cartesian_product_view : public view_interface<cartesian_product_view<_First, _OtherViews...>> {
+    private:
+        using _Base_t = tuple<_First, _OtherViews...>;
+        /* [[no_unique_address]] */ tuple<_First, _OtherViews...> _Bases;
+
+        template <class _CurrType, class... _RemainingTypes>
+        static consteval size_t _Solve_maximum_size_product(const size_t _Prev_value) noexcept {
+            constexpr size_t _Curr_type_max_size = static_cast<size_t>((_STD numeric_limits<_CurrType>::max)());
+
+            // Check for a potential overflow when doing the multiplication. If this occurs, then
+            // we don't have an integer type large enough to hold the maximum product size, so we
+            // just default to the largest possible value.
+            constexpr size_t _Maximum_supported_value = (_STD numeric_limits<size_t>::max)();
+            if (static_cast<float>(_Maximum_supported_value) / static_cast<float>(_Curr_type_max_size)
+                < static_cast<float>(_Prev_value)) {
+                return (_STD numeric_limits<size_t>::max)();
+            }
+
+            const size_t _New_size = _Prev_value * _Curr_type_max_size;
+
+            if constexpr (sizeof...(_RemainingTypes) == 0) {
+                return _New_size;
+            } else {
+                return _Solve_maximum_size_product<_RemainingTypes...>(_New_size);
+            }
+        }
+
+        static constexpr size_t _Maximum_size_product = _Solve_maximum_size_product<_First, _OtherViews...>(1);
+
+        template <bool _IsConst>
+        class _Iterator {
+        private:
+            friend cartesian_product_view;
+
+            using _Parent_t = _Maybe_const<_IsConst, cartesian_product_view>;
+            using _Current_t =
+                tuple<iterator_t<_Maybe_const<_IsConst, _First>>, iterator_t<_Maybe_const<_IsConst, _OtherViews>>...>;
+
+            _Parent_t* _Parent = nullptr;
+            _Current_t _Current;
+
+            constexpr _Iterator(_Parent_t& _Parent_, _Current_t _Current_) noexcept(
+                is_nothrow_move_constructible_v<_Current_t>)
+                : _Parent(_STD addressof(_Parent_)), _Current(_STD move(_Current_)) {}
+
+            static constexpr bool _Is_next_noexcept = []<size_t... _Indices>(index_sequence<_Indices...>) noexcept {
+                constexpr auto _Noexcept_solver_closure = []<size_t _CurrIndex>() noexcept -> bool {
+                    using _Curr_view =
+                        _Maybe_const<_IsConst, tuple_element_t<_CurrIndex, cartesian_product_view::_Base_t>>;
+                    using _Curr_iterator = iterator_t<_Curr_view>;
+
+                    return noexcept(++(_STD declval<_Curr_iterator&>()))&& noexcept(_RANGES begin(
+                        _STD declval<_Curr_view&>()))&& noexcept(_RANGES end(_STD declval<_Curr_view&>()));
+                };
+
+                return (_Noexcept_solver_closure.template operator()<_Indices>() && ...);
+            }
+            ();
+
+            template <size_t N = sizeof...(_OtherViews)>
+            constexpr void _Next() noexcept(_Is_next_noexcept) {
+                auto& _Itr{_STD get<N>(_Current)};
+                ++_Itr;
+
+                if constexpr (N > 0) {
+                    auto& _Curr_view{_STD get<N>(_Parent->_Bases)};
+
+                    if (_Itr == _RANGES end(_Curr_view)) {
+                        _Itr = ranges::begin(_Curr_view);
+                        _Next<N - 1>();
+                    }
+                }
+            }
+
+        public:
+            using iterator_category = input_iterator_tag;
+
+            using iterator_concept = decltype([]() {
+                if constexpr (_Cartesian_product_is_random_access<_IsConst, _First, _OtherViews>) {
+                    return random_access_iterator_tag{};
+                } else if constexpr (_Cartesian_product_is_bidirectional<_IsConst, _First, _OtherViews>) {
+                    return bidirectional_iterator_tag{};
+                } else if constexpr (forward_range<_Maybe_const<_IsConst, _First>>) {
+                    return forward_iterator_tag{};
+                } else {
+                    return input_iterator_tag{};
+                }
+            }());
+
+            using value_type = tuple<range_value_t<_Maybe_const<_IsConst, _First>>,
+                range_value_t<_Maybe_const<_IsConst, _OtherViews>>...>;
+            using reference  = tuple<range_reference_t<_Maybe_const<_IsConst, _First>>,
+                range_reference_t<_Maybe_const<_IsConst, _OtherViews>>...>;
+
+            using difference_type = decltype([]() {
+                // According to N4928: [range.cartesian.iterator]/3, it is recommended that
+                // cartesian_product_view::_Iterator::difference_type be the smallest signed-integer-like
+                // type which can store the product of the sizes of each view stored within the
+                // cartesian_product_view's _Bases tuple.
+                if constexpr (_Maximum_size_product <= static_cast<size_t>((_STD numeric_limits<int8_t>::max)())) {
+                    return int8_t{};
+                } else if constexpr (_Maximum_size_product
+                                     <= static_cast<size_t>((_STD numeric_limits<int16_t>::max)())) {
+                    return int16_t{};
+                } else if constexpr (_Maximum_size_product
+                                     <= static_cast<size_t>((_STD numeric_limits<int32_t>::max)())) {
+                    return int32_t{};
+                } else {
+                    return int64_t{};
+                }
+            }());
+
+            _Iterator() = default;
+        };
+    };
+
 #ifdef __cpp_lib_ranges_to_container
     // clang-format off
     template <class _Range, class _Container>
