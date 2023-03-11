@@ -9199,7 +9199,16 @@ namespace ranges {
                     iterator_t<_Maybe_const<_IsConst, _OtherViews>>>) );
 
     template <_Cartesian_product_common_arg _Rng>
-    constexpr auto _Cartesian_common_arg_end(_Rng& _Range) {
+    constexpr bool _Is_cartesian_common_arg_end_noexcept = []() noexcept {
+        if constexpr (common_range<_Rng>) {
+            return noexcept(_RANGES end(_STD declval<_Rng&>()));
+        } else {
+            return noexcept(_RANGES begin(_STD declval<_Rng&>()) + _RANGES distance(_STD declval<_Rng&>()));
+        }
+    }();
+
+    template <_Cartesian_product_common_arg _Rng>
+    constexpr auto _Cartesian_common_arg_end(_Rng& _Range) noexcept(_Is_cartesian_common_arg_end_noexcept<_Rng>) {
         if constexpr (common_range<_Rng>) {
             return _RANGES end(_Range);
         } else {
@@ -9260,13 +9269,16 @@ namespace ranges {
                         _Maybe_const<_IsConst, tuple_element_t<_CurrIndex, cartesian_product_view::_Base_t>>;
                     using _Curr_iterator = iterator_t<_Curr_view>;
 
-                    return noexcept(++(_STD declval<_Curr_iterator&>()))&& noexcept(_RANGES begin(
-                        _STD declval<_Curr_view&>()))&& noexcept(_RANGES end(_STD declval<_Curr_view&>()));
+                    // clang-format off
+                    return noexcept(++(_STD declval<_Curr_iterator&>())) &&
+                        noexcept(_RANGES begin(_STD declval<_Curr_view&>())) &&
+                        noexcept(_RANGES end(_STD declval<_Curr_view&>()));
+                    // clang-format on
                 };
 
                 return (_Noexcept_solver_closure.template operator()<_Indices>() && ...);
             }
-            ();
+            (make_index_sequence<sizeof...(_OtherViews) + 1>{});
 
             template <size_t N = sizeof...(_OtherViews)>
             constexpr void _Next() noexcept(_Is_next_noexcept) {
@@ -9281,6 +9293,39 @@ namespace ranges {
                         _Next<N - 1>();
                     }
                 }
+            }
+
+            static constexpr bool _Is_prev_noexcept = []<size_t... _Indices>(index_sequence<_Indices...>) noexcept {
+                constexpr auto _Noexcept_solver_closure = []<size_t _CurrIndex>() noexcept -> bool {
+                    using _Curr_view =
+                        _Maybe_const<_IsConst, tuple_element_t<_CurrIndex, cartesian_product_view::_Base_t>>;
+                    using _Curr_iterator = iterator_t<_Curr_view>;
+
+                    // clang-format off
+                    return noexcept(--(_STD declval<_Curr_iterator&>())) &&
+                        noexcept(_RANGES begin(_STD declval<_Curr_view&>())) &&
+                        noexcept(_RANGES end(_STD declval<_Curr_view&>()));
+                    // clang-format on
+                };
+
+                return (_Noexcept_solver_closure.template operator()<_Indices>() && ...);
+            }
+            (make_index_sequence<sizeof...(_OtherViews) + 1>{});
+
+            template <size_t N = sizeof...(_OtherViews)>
+            constexpr void _Prev() noexcept(_Is_prev_noexcept) {
+                auto& _Itr{_STD get<N>(_Current)};
+
+                if constexpr (N > 0) {
+                    auto& _Curr_view{_STD get<N>(_Parent->_Bases)};
+
+                    if (_Itr == _RANGES begin(_Curr_view)) {
+                        _Itr = _Cartesian_common_arg_end(_Curr_view);
+                        _Prev<N - 1>();
+                    }
+                }
+
+                --_Itr;
             }
 
         public:
@@ -9321,6 +9366,31 @@ namespace ranges {
                 }
             }());
 
+        private:
+            template <size_t _Index, class _Tuple>
+            _NODISCARD constexpr difference_type _Distance_from_impl(const _Tuple& _Rhs_tuple) const noexcept {
+                const difference_type _Curr_diff =
+                    static_cast<difference_type>(_STD get<_Index>(_Current) - _STD get<_Index>(_Rhs_tuple));
+
+                if constexpr (_Index > 0) {
+                    const difference_type _Curr_size =
+                        static_cast<difference_type>(_RANGES size(_STD get<_Index>(_Parent->_Base)));
+                    return _Curr_diff + _Curr_size * _Distance_from_impl<_Index - 1>(_Rhs_tuple);
+                } else {
+                    return _Curr_diff;
+                }
+            }
+
+            template <class _Tuple>
+            _NODISCARD constexpr difference_type _Distance_from(const _Tuple& _Rhs_tuple) const noexcept {
+                // This recursive implementation is a mathematically simplified version of the distance-from
+                // function as specified in N4928: [range.cartesian.iterator]/7. It can drastically reduce the
+                // number of multiplication operations when the number of views is high.
+
+                return _Distance_from_impl<sizeof...(_OtherViews)>(_Rhs_tuple);
+            }
+
+        public:
             _Iterator() = default;
         };
     };
